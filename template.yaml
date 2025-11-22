@@ -1,0 +1,331 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Deploys EC2 instances for staff to use as workboxes
+
+Parameters:
+  AllowedIpPrefixListId:
+    Type: String
+    Description: Allowed IP prefix list ID
+  EC2InstanceAMI:
+    Type: AWS::EC2::Image::Id
+    Description: EC2 instance AMI
+  EC2InstanceKeyPairName:
+    Type: String
+    Description: EC2 instance key pair name
+  EC2InstanceName:
+    Type: String
+    Description: EC2 instance name
+  EC2VolumeSize:
+    Type: Number
+    Description: Size of the root EBS volume in GB
+  EC2InstanceType:
+    Type: String
+    Description: EC2 instance type
+  ToddsIpPrefixListId:
+    Type: String
+    Description: Todd's IP prefix list ID
+  ValheimServerName:
+    Type: String
+    Description: Server name
+  ValheimWorldName:
+    Type: String
+    Description: World name
+  ValheimS3Bucket:
+    Type: String
+    Description: S3 bucket to store Valheim worlds
+  ValheimServerPassword:
+    Type: AWS::SSM::Parameter::Value<String>
+    Description: Server password stored in SSM Parameter Store
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID
+  VpcSubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: VPC subnet ID
+
+Resources:
+  # SNS Topic for receiving and distributing alarms
+  # Remember to subscribe to this topic after deployment to receive notifications
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${AWS::StackName}-Alarms"
+
+  # Only allows tcp traffic from specific IPs to reach the instance
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow all traffic from specific IP
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: "-1"
+          SourcePrefixListId: !Ref ToddsIpPrefixListId
+        - IpProtocol: tcp
+          FromPort: 2456
+          ToPort: 2457
+          SourcePrefixListId: !Ref AllowedIpPrefixListId
+
+  EC2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: EC2InstancePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "arn:aws:s3:::${ValheimS3Bucket}/*"
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub "arn:aws:s3:::${ValheimS3Bucket}"
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2InstanceRole
+
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref EC2InstanceType
+      SubnetId: !Ref VpcSubnetId
+      KeyName: !Ref EC2InstanceKeyPairName
+      SecurityGroupIds:  # this has to be a list, even if there's just one entry
+        - !Ref EC2SecurityGroup
+      ImageId: !Ref EC2InstanceAMI
+      BlockDeviceMappings:
+        - DeviceName: "/dev/sda1"
+          Ebs:
+            VolumeSize: !Ref EC2VolumeSize
+            VolumeType: gp3
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: !Ref EC2InstanceName
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+
+          # install the basics
+          sudo apt-get update && sudo apt-get upgrade -y
+
+          # Install AWS CLI
+          sudo apt-get install -y unzip
+          sudo curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          sudo unzip awscliv2.zip
+          sudo ./aws/install
+          sudo rm -rf awscliv2.zip
+
+          # install docker
+          sudo install -m 0755 -d /etc/apt/keyrings
+          sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+          sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+          # Add the repository to Apt sources:
+          echo \
+            "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+            $(. /etc/os-release && echo "${!UBUNTU_CODENAME:-$!VERSION_CODENAME}") stable" | \
+            sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+          sudo groupadd docker
+          sudo usermod -aG docker ubuntu
+          sudo systemctl enable docker.service
+          sudo systemctl enable containerd.service
+
+          # Create Valheim server config file
+          mkdir -p /etc/valheim-auto-server
+          echo "SERVER_NAME=${ValheimServerName}" >> /etc/valheim-auto-server/valheim-server-env-file
+          echo "SERVER_PORT=2456" >> /etc/valheim-auto-server/valheim-server-env-file
+          echo "WORLD_NAME=${ValheimWorldName}" >> /etc/valheim-auto-server/valheim-server-env-file
+          echo "SERVER_PASS=${ValheimServerPassword}" >> /etc/valheim-auto-server/valheim-server-env-file
+          echo "SERVER_PUBLIC=false" >> /etc/valheim-auto-server/valheim-server-env-file
+
+          # create service file
+          cat > /etc/systemd/system/valheim.service << EOF
+          [Unit]
+          Description=Valheim Server
+          After=docker.service
+          Requires=docker.service
+          ConditionPathExists=/etc/valheim-auto-server/valheim-server-env-file
+
+          [Service]
+          TimeoutStartSec=0
+          ExecStartPre=-/usr/bin/docker stop %n
+          ExecStartPre=-/usr/bin/docker rm %n
+          ExecStartPre=/usr/local/bin/aws s3 sync s3://${ValheimS3Bucket}/config /etc/valheim
+          ExecStart=/usr/bin/docker run \
+                    --name %n \
+                    --pull=always \
+                    --rm \
+                    --cap-add=sys_nice \
+                    --stop-timeout 120 \
+                    -v /etc/valheim:/config:Z \
+                    -v /opt/valheim:/opt/valheim:Z \
+                    -p 2456-2457:2456-2457/udp \
+                    --env-file /etc/valheim-auto-server/valheim-server-env-file \
+                    ghcr.io/lloesche/valheim-server
+          ExecStop=/usr/bin/docker stop %n
+          ExecStopPost=/usr/local/bin/aws s3 sync /etc/valheim s3://${ValheimS3Bucket}/config
+          Restart=always
+          RestartSec=10s
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+          mkdir -p /etc/valheim /opt/valheim
+          sudo chmod 777 /etc/valheim /opt/valheim
+
+          systemctl daemon-reload
+          systemctl enable valheim.service
+          systemctl start valheim.service
+
+  EC2CpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}_EC2_HighCPUUsage"
+      AlarmDescription: !Sub "Alarm if ${EC2InstanceName} CPU usage is high"
+      AlarmActions:
+        - !Ref AlarmTopic
+      TreatMissingData: ignore
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 70
+      ComparisonOperator: GreaterThanThreshold
+      Metrics:
+        - Id: m1
+          Label: CPUUtilization
+          MetricStat:
+            Metric:
+              Namespace: AWS/EC2
+              MetricName: CPUUtilization
+              Dimensions:
+                - Name: InstanceId
+                  Value: !Ref EC2Instance
+            Period: 300
+            Stat: Average
+            Unit: Percent
+
+  # EIP is necessary to have stable IP after stopping/starting the instance
+  EC2InstanceEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref EC2Instance
+
+  # BAREBONES API allows mates to start/stop the server via HTTP requests
+  InstanceControllerAPI:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      MethodSettings:
+        - ResourcePath: "/*" 
+          HttpMethod: "*"
+          ThrottlingBurstLimit: 1
+          ThrottlingRateLimit: 1 # Heavily throttle all routes to mitigate abuse
+
+  # CONTROLLER FUNCTION starts server automatically once a week, stops it if inactive,
+  # and also allows mates to start server via API Gateway
+  InstanceController:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: InstanceController/
+      Runtime: python3.12
+      Handler: app.lambda_handler
+      MemorySize: 128
+      Timeout: 60
+      Environment:
+        Variables:
+          AllowedIpPrefixListId: !Ref AllowedIpPrefixListId
+          ValheimEC2InstanceId: !Ref EC2Instance
+          ValheimS3BucketName: !Ref ValheimS3Bucket
+      Events:
+        AutoStartToddsWorkbox:
+          Type: ScheduleV2
+          Properties:
+            Description: "Start the server on Sunday mornings"
+            Input: !Sub '[{"RequestType": "start", "InstanceId": "${EC2Instance}"}]'
+            ScheduleExpression: cron(30 6 ? * SUN *)
+            ScheduleExpressionTimezone: Australia/Adelaide
+        AutoStopInactiveWorkboxes:
+          Type: ScheduleV2
+          Properties:
+            Description: "Periodically try to stop instances if they are inactive."
+            Input: !Sub '[{"RequestType": "stop", "InstanceId": "${EC2Instance}"}]'
+            ScheduleExpression: rate(2 hour)
+        ApiRequest:
+          Type: Api
+          Properties:
+            Path: /
+            Method: post
+            RestApiId: !Ref InstanceControllerAPI
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action: ec2:DescribeInstances
+              Resource: "*"
+            - Effect: Allow
+              Action: ec2:GetManagedPrefixListEntries
+              Resource:
+                - !Sub "arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:prefix-list/${AllowedIpPrefixListId}"
+            - Effect: Allow
+              Action:
+                - ec2:StartInstances
+                - ec2:StopInstances
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  "ec2:ResourceTag/project": valheim-auto-server
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action: cloudwatch:GetMetricStatistics
+              Resource: "*"
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource: !Sub "arn:aws:s3:::${ValheimS3Bucket}/*"
+            - Effect: Allow
+              Action: s3:ListBucket
+              Resource: !Sub "arn:aws:s3:::${ValheimS3Bucket}"
+
+  InstanceControllerErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: InstanceController Errors
+      AlarmDescription: "Alarm if InstanceController has errors"
+      AlarmActions:
+        - !Ref AlarmTopic
+      TreatMissingData: ignore
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Metrics:
+        - Id: m1
+          Label: Errors
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Errors
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Ref InstanceController
+            Period: 300
+            Stat: Sum
+            Unit: Count

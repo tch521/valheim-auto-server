@@ -1,0 +1,33 @@
+version: 0.1
+
+default:
+  build:
+    parameters:
+      cached: true
+      parallel: false
+  validate:
+    parameters:
+      lint: true
+  deploy:
+    parameters:
+      stack_name: valheim-auto-server
+      s3_prefix: valheim-auto-server
+      tags: [project=valheim-auto-server]
+      confirm_changeset: false
+      resolve_s3: true
+      region: ap-southeast-2
+      capabilities: [CAPABILITY_IAM]
+      parameter_overrides:
+        - AllowedIpPrefixListId=pl-00f14d8a501948b97
+        - EC2InstanceAMI=ami-0f5d1713c9af4fe30
+        - EC2InstanceKeyPairName=valheim-auto-server
+        - EC2InstanceName=valheim-auto-server
+        - EC2VolumeSize=8
+        - EC2InstanceType=t3a.medium
+        - ToddsIpPrefixListId=pl-03b5b743c3401e3e8
+        - ValheimServerName=server4mates
+        - ValheimWorldName=CDKT1
+        - ValheimS3Bucket=valheim-resources-th
+        - ValheimServerPassword=/valheim/password
+        - VpcId=vpc-031eb36aa54079202
+        - VpcSubnetId=subnet-0d71ec903aac66277
