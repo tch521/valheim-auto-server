@@ -237,6 +237,34 @@ Resources:
     Properties:
       InstanceId: !Ref EC2Instance
 
+  # Alarm based on network bytes in 
+  # Shut down if 5 minute sums never exceed 2MB in the past 30 minutes
+  EC2NetworkInactivityAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}_EC2_NetworkInactivity"
+      AlarmDescription: !Sub "Alarm if ${EC2InstanceName} has low network activity"
+      AlarmActions:
+        - !Sub "arn:aws:automate:${AWS::Region}:ec2:stop"
+      TreatMissingData: ignore
+      EvaluationPeriods: 6
+      DatapointsToAlarm: 6
+      Threshold: 2000000
+      ComparisonOperator: LessThanThreshold
+      Metrics:
+        - Id: m1
+          Label: NetworkIn
+          MetricStat:
+            Metric:
+              Namespace: AWS/EC2
+              MetricName: NetworkIn
+              Dimensions:
+                - Name: InstanceId
+                  Value: !Ref EC2Instance
+            Period: 300
+            Stat: Sum
+            Unit: Bytes
+
   # BAREBONES API allows mates to start/stop the server via HTTP requests
   InstanceControllerAPI:
     Type: AWS::Serverless::Api
@@ -265,19 +293,19 @@ Resources:
           ValheimEC2InstanceId: !Ref EC2Instance
           ValheimS3BucketName: !Ref ValheimS3Bucket
       Events:
-        AutoStartToddsWorkbox:
-          Type: ScheduleV2
-          Properties:
-            Description: "Start the server on Sunday mornings"
-            Input: !Sub '{"scheduled_event": "start_valheim_server"}'
-            ScheduleExpression: cron(30 6 ? * SUN *)
-            ScheduleExpressionTimezone: Australia/Adelaide
-        AutoStopInactiveWorkboxes:
-          Type: ScheduleV2
-          Properties:
-            Description: "Periodically try to stop instances if they are inactive."
-            Input: !Sub '{"scheduled_event": "stop_valheim_server"}'
-            ScheduleExpression: rate(1 hour)
+        # AutoStartToddsWorkbox:
+        #   Type: ScheduleV2
+        #   Properties:
+        #     Description: "Start the server on Sunday mornings"
+        #     Input: !Sub '{"scheduled_event": "start_valheim_server"}'
+        #     ScheduleExpression: cron(30 6 ? * SUN *)
+        #     ScheduleExpressionTimezone: Australia/Adelaide
+        # AutoStopInactiveWorkboxes:
+        #   Type: ScheduleV2
+        #   Properties:
+        #     Description: "Periodically try to stop instances if they are inactive."
+        #     Input: !Sub '{"scheduled_event": "stop_valheim_server"}'
+        #     ScheduleExpression: rate(1 hour)
         ApiStartValheim:
           Type: Api
           Properties:

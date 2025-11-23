@@ -23,7 +23,7 @@ default:
         - EC2InstanceKeyPairName=valheim-auto-server
         - EC2InstanceName=valheim-auto-server
         - EC2VolumeSize=20
-        - EC2InstanceType=t3a.large
+        - EC2InstanceType=t3a.medium
         - ToddsIpPrefixListId=pl-03b5b743c3401e3e8
         - ValheimServerName=server4mates
         - ValheimWorldName=CDKT1
