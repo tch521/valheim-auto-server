@@ -361,3 +361,6 @@ Outputs:
   ApiUrl:
     Description: "API Gateway endpoint URL for InstanceController"
     Value: !Sub "https://${InstanceControllerAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/"
+  ServerIpAddress:
+    Description: "Public IP address of the Valheim server"
+    Value: !Ref EC2InstanceEIP
