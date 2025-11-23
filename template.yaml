@@ -198,6 +198,9 @@ Resources:
           WantedBy=multi-user.target
           EOF
 
+          # FIRST TIME ONLY copy world files from S3
+          /usr/local/bin/aws s3 cp --recursive s3://${ValheimS3Bucket}/config /valheim/config
+
           systemctl daemon-reload
           systemctl enable valheim.service
           systemctl start valheim.service
@@ -353,3 +356,8 @@ Resources:
             Period: 300
             Stat: Sum
             Unit: Count
+
+Outputs:
+  ApiUrl:
+    Description: "API Gateway endpoint URL for InstanceController"
+    Value: !Sub "https://${InstanceControllerAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/"

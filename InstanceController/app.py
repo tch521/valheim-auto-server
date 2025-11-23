@@ -23,10 +23,10 @@ def lambda_handler(event, context):
         response = main(event, context)
         return {"statusCode": 200, "body": json.dumps(response)}
     except AssertionError as e:
-        LOGGER.error(str(e), exc_info=True, stack_info=True)
+        LOGGER.error(str(e))
         return {"statusCode": 400, "body": str(e)}
     except PermissionError as e:
-        LOGGER.error(str(e), exc_info=True, stack_info=True)
+        LOGGER.error(str(e))
         return {"statusCode": 403, "body": str(e)}
 
 
@@ -75,7 +75,7 @@ def checkApiSourceIp(event, log_message_prefix=None):
             LOGGER.info(f"{log_message_prefix}{entry['Description']}")
             return
     raise PermissionError(
-        f"{log_message_prefix}Source IP {source_ip} not in allowed list."
+        f"{log_message_prefix}unknown IP {source_ip} blocked."
     )
 
 
@@ -128,7 +128,7 @@ def createBackup():
         key=lambda x: x.key,
         reverse=True,
     )
-    if len(backups) < 5:
+    if len(backups) > 5:
         for old_backup in backups[5:]:
             LOGGER.info(f"Deleting old backup {old_backup.key}")
             old_backup.delete()
