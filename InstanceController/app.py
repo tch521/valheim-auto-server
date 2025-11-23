@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timedelta, UTC
 from tempfile import TemporaryDirectory
 import ipaddress
+import zipfile
 
 # Setup logging
 logging.basicConfig(
@@ -22,26 +23,24 @@ def lambda_handler(event, context):
         response = main(event, context)
         return {"statusCode": 200, "body": json.dumps(response)}
     except AssertionError as e:
+        LOGGER.error(str(e), exc_info=True, stack_info=True)
         return {"statusCode": 400, "body": str(e)}
     except PermissionError as e:
+        LOGGER.error(str(e), exc_info=True, stack_info=True)
         return {"statusCode": 403, "body": str(e)}
 
 
 def main(event, context):
-    print("Received event: " + json.dumps(event, indent=2))
+    LOGGER.info(json.dumps(event))
 
     # if event comes from api gateway, log details then extract body
     if "body" in event:
-        LOGGER.info(f"API Gateway event received: {json.dumps(event, indent=2)}")
-        event = json.loads(event["body"])
-        assert (
-            "RequestType" in event
-        ), "Invalid API request body. 'RequestType' is required."
-        RequestType = event["RequestType"]
-        checkApiSourceIp(event, log_message_prefix=f"{RequestType} request from ")
+        LOGGER.info(f"API Gateway event received")
+        action = event["path"].lstrip("/")
+        checkApiSourceIp(event, log_message_prefix=f"{action} request from ")
     else:
         # event comes direct (i.e. from eventbridge scheduler)
-        RequestType = event["RequestType"]
+        action = event["scheduled_event"]
 
     actions = {
         "start_valheim_server": lambda: [
@@ -57,12 +56,12 @@ def main(event, context):
     }
 
     # Now execute request
-    if RequestType in actions:
-        return actions[RequestType]()
+    if action in actions:
+        return actions[action]()
     else:
         raise AssertionError(
-            f"Invalid RequestType: {RequestType}. "
-            f"RequestType must be one of: {list(actions.keys())}"
+            f"Invalid action: {action}. "
+            f"Action must be one of: {list(actions.keys())}"
         )
 
 
@@ -104,24 +103,27 @@ def startInstance(InstanceId):
 
 
 def createBackup():
-    new_name = f"valheim_config_backup_{datetime.now():%Y-%m-%d_%H-%M-%S}.tar.gz"
+    new_name = f"valheim_config_backup_{datetime.now():%Y-%m-%d_%H-%M-%S}.zip"
     LOGGER.info(f"Creating backup on S3 {new_name}")
     s3 = boto3.resource("s3")
     bucket = s3.Bucket(os.environ["ValheimS3BucketName"])
     with TemporaryDirectory() as tmpdir:
         for obj in bucket.objects.filter(Prefix="config/"):
+            if obj.key.endswith("/"):
+                continue  # skip directories
             target = os.path.join(tmpdir, os.path.relpath(obj.key, "config/"))
+            LOGGER.info(f"Downloading {obj.key} to {target}")
             os.makedirs(os.path.dirname(target), exist_ok=True)
             bucket.download_file(obj.key, target)
         archive_path = os.path.join(tmpdir, new_name)
-        os.system(f"tar -czf {archive_path} -C {tmpdir} config")
+        with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(tmpdir, arcname="config")
         bucket.upload_file(archive_path, new_name)
     # also delete old backups
     backups = sorted(
         [
             obj
-            for obj in bucket.objects.all()
-            if obj.key.startswith("valheim_config_backup_")
+            for obj in bucket.objects.filter(Prefix="valheim_config_backup_")
         ],
         key=lambda x: x.key,
         reverse=True,
@@ -161,6 +163,7 @@ def instance_in_use(InstanceId, lookback_hours=1, usage_threshold=10.0, period=3
                 LOGGER.info(
                     f"Instance {InstanceId} has recent CPU activity - not stopping."
                 )
+                LOGGER.info(f"Datapoint: {datapoint}")
                 return True
         # If all checks pass, then instance is not in use
         return False

@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: Deploys EC2 instances for staff to use as workboxes
+Description: Deploys valheim server
 
 Parameters:
   AllowedIpPrefixListId:
@@ -64,6 +64,18 @@ Resources:
           FromPort: 2456
           ToPort: 2457
           SourcePrefixListId: !Ref AllowedIpPrefixListId
+        - IpProtocol: udp
+          FromPort: 2456
+          ToPort: 2457
+          SourcePrefixListId: !Ref AllowedIpPrefixListId
+
+  SelfIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: EC2SecurityGroup
+    Properties:
+      GroupId: !Ref EC2SecurityGroup
+      IpProtocol: -1
+      SourceSecurityGroupId: !Ref EC2SecurityGroup
 
   EC2InstanceRole:
     Type: AWS::IAM::Role
@@ -81,7 +93,9 @@ Resources:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
-                Action: s3:GetObject
+                Action: 
+                - s3:GetObject
+                - s3:PutObject
                 Resource: !Sub "arn:aws:s3:::${ValheimS3Bucket}/*"
               - Effect: Allow
                 Action: s3:ListBucket
@@ -143,13 +157,14 @@ Resources:
           sudo systemctl enable docker.service
           sudo systemctl enable containerd.service
 
+          mkdir -p /valheim /valheim/config /valheim/opt
+
           # Create Valheim server config file
-          mkdir -p /etc/valheim-auto-server
-          echo "SERVER_NAME=${ValheimServerName}" >> /etc/valheim-auto-server/valheim-server-env-file
-          echo "SERVER_PORT=2456" >> /etc/valheim-auto-server/valheim-server-env-file
-          echo "WORLD_NAME=${ValheimWorldName}" >> /etc/valheim-auto-server/valheim-server-env-file
-          echo "SERVER_PASS=${ValheimServerPassword}" >> /etc/valheim-auto-server/valheim-server-env-file
-          echo "SERVER_PUBLIC=false" >> /etc/valheim-auto-server/valheim-server-env-file
+          echo "SERVER_NAME=${ValheimServerName}" >> /valheim/valheim-server-env-file
+          echo "SERVER_PORT=2456" >> /valheim/valheim-server-env-file
+          echo "WORLD_NAME=${ValheimWorldName}" >> /valheim/valheim-server-env-file
+          echo "SERVER_PASS=${ValheimServerPassword}" >> /valheim/valheim-server-env-file
+          echo "SERVER_PUBLIC=false" >> /valheim/valheim-server-env-file
 
           # create service file
           cat > /etc/systemd/system/valheim.service << EOF
@@ -157,35 +172,31 @@ Resources:
           Description=Valheim Server
           After=docker.service
           Requires=docker.service
-          ConditionPathExists=/etc/valheim-auto-server/valheim-server-env-file
+          ConditionPathExists=/valheim/valheim-server-env-file
 
           [Service]
           TimeoutStartSec=0
-          ExecStartPre=-/usr/bin/docker stop %n
-          ExecStartPre=-/usr/bin/docker rm %n
-          ExecStartPre=/usr/local/bin/aws s3 sync s3://${ValheimS3Bucket}/config /etc/valheim
+          ExecStartPre=-/usr/bin/docker stop valheimcontainer
+          ExecStartPre=-/usr/bin/docker rm valheimcontainer
           ExecStart=/usr/bin/docker run \
-                    --name %n \
+                    --name valheimcontainer \
                     --pull=always \
                     --rm \
                     --cap-add=sys_nice \
                     --stop-timeout 120 \
-                    -v /etc/valheim:/config:Z \
-                    -v /opt/valheim:/opt/valheim:Z \
+                    -v /valheim/config:/config:Z \
+                    -v /valheim/opt:/opt/valheim:Z \
                     -p 2456-2457:2456-2457/udp \
-                    --env-file /etc/valheim-auto-server/valheim-server-env-file \
+                    --env-file /valheim/valheim-server-env-file \
                     ghcr.io/lloesche/valheim-server
-          ExecStop=/usr/bin/docker stop %n
-          ExecStopPost=/usr/local/bin/aws s3 sync /etc/valheim s3://${ValheimS3Bucket}/config
+          ExecStop=/usr/bin/docker stop valheimcontainer
+          ExecStopPost=/usr/local/bin/aws s3 cp --recursive /valheim/config s3://${ValheimS3Bucket}/config
           Restart=always
-          RestartSec=10s
+          RestartSec=60s
 
           [Install]
           WantedBy=multi-user.target
           EOF
-
-          mkdir -p /etc/valheim /opt/valheim
-          sudo chmod 777 /etc/valheim /opt/valheim
 
           systemctl daemon-reload
           systemctl enable valheim.service
@@ -201,7 +212,7 @@ Resources:
       TreatMissingData: ignore
       EvaluationPeriods: 2
       DatapointsToAlarm: 2
-      Threshold: 70
+      Threshold: 80
       ComparisonOperator: GreaterThanThreshold
       Metrics:
         - Id: m1
@@ -228,6 +239,7 @@ Resources:
     Type: AWS::Serverless::Api
     Properties:
       StageName: prod
+      OpenApiVersion: 3.0.1
       MethodSettings:
         - ResourcePath: "/*" 
           HttpMethod: "*"
@@ -243,7 +255,7 @@ Resources:
       Runtime: python3.12
       Handler: app.lambda_handler
       MemorySize: 128
-      Timeout: 60
+      Timeout: 25
       Environment:
         Variables:
           AllowedIpPrefixListId: !Ref AllowedIpPrefixListId
@@ -254,20 +266,32 @@ Resources:
           Type: ScheduleV2
           Properties:
             Description: "Start the server on Sunday mornings"
-            Input: !Sub '[{"RequestType": "start", "InstanceId": "${EC2Instance}"}]'
+            Input: !Sub '{"scheduled_event": "start_valheim_server"}'
             ScheduleExpression: cron(30 6 ? * SUN *)
             ScheduleExpressionTimezone: Australia/Adelaide
         AutoStopInactiveWorkboxes:
           Type: ScheduleV2
           Properties:
             Description: "Periodically try to stop instances if they are inactive."
-            Input: !Sub '[{"RequestType": "stop", "InstanceId": "${EC2Instance}"}]'
-            ScheduleExpression: rate(2 hour)
-        ApiRequest:
+            Input: !Sub '{"scheduled_event": "stop_valheim_server"}'
+            ScheduleExpression: rate(1 hour)
+        ApiStartValheim:
           Type: Api
           Properties:
-            Path: /
-            Method: post
+            Path: /start_valheim_server
+            Method: GET
+            RestApiId: !Ref InstanceControllerAPI
+        ApiStopValheim:
+          Type: Api
+          Properties:
+            Path: /stop_valheim_server
+            Method: GET
+            RestApiId: !Ref InstanceControllerAPI
+        ApiForceStopValheim:
+          Type: Api
+          Properties:
+            Path: /force_stop_valheim_server
+            Method: GET
             RestApiId: !Ref InstanceControllerAPI
       Policies:
         - Version: 2012-10-17

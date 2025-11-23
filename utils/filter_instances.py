@@ -10,8 +10,8 @@ df = pd.read_csv(Path(__file__).parent / "instanceTypes.csv")
 filtered_df = df[
     (df["vCPUs"] >= 2)
     & (df["vCPUs"] <= 4)
-    & (df["Memory (GiB)"] >= 8)
-    & (df["Memory (GiB)"] <= 16)
+    & (df["Memory (GiB)"] == 8)
+    # & (df["Memory (GiB)"] <= 16)
     & (df["Architecture"].str.contains("x86_64"))
     & (df["Current generation"] == True)
 ]
