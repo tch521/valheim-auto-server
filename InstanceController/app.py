@@ -43,10 +43,9 @@ def main(event, context):
         action = event["scheduled_event"]
 
     actions = {
-        "start_valheim_server": lambda: [
-            createBackup(),
-            startInstance(os.environ["ValheimEC2InstanceId"]),
-        ][1],
+        "start_valheim_server": lambda: startInstance(
+            os.environ["ValheimEC2InstanceId"]
+        ),
         "stop_valheim_server": lambda: stopInstance(
             os.environ["ValheimEC2InstanceId"], force=False
         ),
@@ -74,9 +73,7 @@ def checkApiSourceIp(event, log_message_prefix=None):
         if source_ip in ipaddress.ip_network(entry["Cidr"]):
             LOGGER.info(f"{log_message_prefix}{entry['Description']}")
             return
-    raise PermissionError(
-        f"{log_message_prefix}unknown IP {source_ip} blocked."
-    )
+    raise PermissionError(f"{log_message_prefix}unknown IP {source_ip} blocked.")
 
 
 def get_instance_state(InstanceId):
@@ -100,38 +97,6 @@ def startInstance(InstanceId):
     else:
         LOGGER.info(f"Instance already running: {InstanceId}")
         return {"Message": f"EC2 instance {InstanceId} is already running."}
-
-
-def createBackup():
-    new_name = f"valheim_config_backup_{datetime.now():%Y-%m-%d_%H-%M-%S}.zip"
-    LOGGER.info(f"Creating backup on S3 {new_name}")
-    s3 = boto3.resource("s3")
-    bucket = s3.Bucket(os.environ["ValheimS3BucketName"])
-    with TemporaryDirectory() as tmpdir:
-        for obj in bucket.objects.filter(Prefix="config/"):
-            if obj.key.endswith("/"):
-                continue  # skip directories
-            target = os.path.join(tmpdir, os.path.relpath(obj.key, "config/"))
-            LOGGER.info(f"Downloading {obj.key} to {target}")
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            bucket.download_file(obj.key, target)
-        archive_path = os.path.join(tmpdir, new_name)
-        with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.write(tmpdir, arcname="config")
-        bucket.upload_file(archive_path, new_name)
-    # also delete old backups
-    backups = sorted(
-        [
-            obj
-            for obj in bucket.objects.filter(Prefix="valheim_config_backup_")
-        ],
-        key=lambda x: x.key,
-        reverse=True,
-    )
-    if len(backups) > 5:
-        for old_backup in backups[5:]:
-            LOGGER.info(f"Deleting old backup {old_backup.key}")
-            old_backup.delete()
 
 
 def instance_in_use(InstanceId, lookback_hours=1, usage_threshold=10.0, period=300):

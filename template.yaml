@@ -293,19 +293,6 @@ Resources:
           ValheimEC2InstanceId: !Ref EC2Instance
           ValheimS3BucketName: !Ref ValheimS3Bucket
       Events:
-        # AutoStartToddsWorkbox:
-        #   Type: ScheduleV2
-        #   Properties:
-        #     Description: "Start the server on Sunday mornings"
-        #     Input: !Sub '{"scheduled_event": "start_valheim_server"}'
-        #     ScheduleExpression: cron(30 6 ? * SUN *)
-        #     ScheduleExpressionTimezone: Australia/Adelaide
-        # AutoStopInactiveWorkboxes:
-        #   Type: ScheduleV2
-        #   Properties:
-        #     Description: "Periodically try to stop instances if they are inactive."
-        #     Input: !Sub '{"scheduled_event": "stop_valheim_server"}'
-        #     ScheduleExpression: rate(1 hour)
         ApiStartValheim:
           Type: Api
           Properties:
@@ -347,17 +334,6 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:GetMetricStatistics
               Resource: "*"
-        - Version: 2012-10-17
-          Statement:
-            - Effect: Allow
-              Action:
-                - s3:GetObject
-                - s3:PutObject
-                - s3:DeleteObject
-              Resource: !Sub "arn:aws:s3:::${ValheimS3Bucket}/*"
-            - Effect: Allow
-              Action: s3:ListBucket
-              Resource: !Sub "arn:aws:s3:::${ValheimS3Bucket}"
 
   InstanceControllerErrorsAlarm:
     Type: AWS::CloudWatch::Alarm
